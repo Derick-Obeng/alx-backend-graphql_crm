@@ -3,6 +3,8 @@ import json
 import requests
 from datetime import datetime
 from django.conf import settings
+from gql import gql, Client
+from gql.transport.requests import RequestsHTTPTransport
 
 
 def log_crm_heartbeat():
@@ -32,80 +34,94 @@ def update_low_stock():
         _update_via_database(timestamp)
 
 
-def _update_via_graphql(timestamp):
-    """Try to update via GraphQL mutation"""
-    # GraphQL mutation query
-    mutation = """
-    mutation {
-        updateLowStockProducts {
-            updatedProducts {
-                id
-                name
-                stock
-            }
-            successMessage
-            errors
-        }
-    }
-    """
-    
+def _check_graphql_endpoint(timestamp):
+    """Check if GraphQL endpoint is responsive using hello field"""
     try:
-        # Execute GraphQL mutation via HTTP request
-        # Assuming the GraphQL endpoint is available at /graphql/
+        # GraphQL endpoint configuration
         graphql_url = 'http://localhost:8000/graphql/'
         
-        response = requests.post(
-            graphql_url,
-            json={'query': mutation},
-            headers={'Content-Type': 'application/json'},
-            timeout=30
-        )
+        # Create GraphQL client
+        transport = RequestsHTTPTransport(url=graphql_url, timeout=10)
+        client = Client(transport=transport, fetch_schema_from_transport=False)
         
-        if response.status_code == 200:
-            data = response.json()
-            
-            if 'errors' in data:
-                # GraphQL errors
-                error_msg = f"{timestamp} GraphQL errors: {data['errors']}\n"
-                _write_log(error_msg, timestamp)
-                return False
-            else:
-                mutation_data = data['data']['updateLowStockProducts']
-                
-                if mutation_data['errors']:
-                    # Mutation returned errors
-                    error_msg = f"{timestamp} Mutation errors: {mutation_data['errors']}\n"
-                    _write_log(error_msg, timestamp)
-                    return False
-                else:
-                    # Success
-                    updated_products = mutation_data['updatedProducts']
-                    success_message = mutation_data['successMessage']
-                    
-                    log_message = f"{timestamp} {success_message}\n"
-                    
-                    if updated_products:
-                        log_message += f"{timestamp} Updated products:\n"
-                        for product in updated_products:
-                            log_message += f"{timestamp}   - {product['name']} (ID: {product['id']}) - New stock: {product['stock']}\n"
-                    
-                    log_message += "\n"
-                    _write_log(log_message, timestamp)
-                    return True
-        else:
-            # HTTP error
-            error_msg = f"{timestamp} HTTP error {response.status_code}: {response.text}\n"
+        # Query the hello field to verify endpoint is responsive
+        hello_query = gql("""
+            query {
+                hello
+            }
+        """)
+        
+        result = client.execute(hello_query)
+        hello_message = result.get('hello', 'No hello response')
+        
+        _write_log(f"{timestamp} GraphQL endpoint check successful: {hello_message}\n", timestamp)
+        return True, hello_message
+        
+    except Exception as e:
+        error_msg = f"{timestamp} GraphQL endpoint check failed: {str(e)}\n"
+        _write_log(error_msg, timestamp)
+        return False, str(e)
+
+
+def _update_via_graphql(timestamp):
+    """Try to update via GraphQL mutation using gql library"""
+    
+    # First, check if GraphQL endpoint is responsive
+    endpoint_ok, hello_response = _check_graphql_endpoint(timestamp)
+    if not endpoint_ok:
+        return False
+    
+    # GraphQL endpoint configuration
+    graphql_url = 'http://localhost:8000/graphql/'
+    
+    try:
+        # Create GraphQL client
+        transport = RequestsHTTPTransport(url=graphql_url, timeout=30)
+        client = Client(transport=transport, fetch_schema_from_transport=False)
+        
+        # GraphQL mutation query
+        mutation = gql("""
+            mutation {
+                updateLowStockProducts {
+                    updatedProducts {
+                        id
+                        name
+                        stock
+                    }
+                    successMessage
+                    errors
+                }
+            }
+        """)
+        
+        # Execute the mutation
+        result = client.execute(mutation)
+        mutation_data = result['updateLowStockProducts']
+        
+        if mutation_data['errors']:
+            # Mutation returned errors
+            error_msg = f"{timestamp} Mutation errors: {mutation_data['errors']}\n"
             _write_log(error_msg, timestamp)
             return False
+        else:
+            # Success
+            updated_products = mutation_data['updatedProducts']
+            success_message = mutation_data['successMessage']
             
-    except requests.exceptions.RequestException as e:
-        # Request failed
-        error_msg = f"{timestamp} Request failed: {str(e)}\n"
-        _write_log(error_msg, timestamp)
-        return False
+            log_message = f"{timestamp} {success_message}\n"
+            
+            if updated_products:
+                log_message += f"{timestamp} Updated products:\n"
+                for product in updated_products:
+                    log_message += f"{timestamp}   - {product['name']} (ID: {product['id']}) - New stock: {product['stock']}\n"
+            
+            log_message += "\n"
+            _write_log(log_message, timestamp)
+            return True
+            
     except Exception as e:
-        # Other errors
-        error_msg = f"{timestamp} GraphQL approach failed: {str(e)}\n"
+        # GraphQL client or execution errors
+        error_msg = f"{timestamp} GraphQL mutation execution failed: {str(e)}\n"
         _write_log(error_msg, timestamp)
         return False
 

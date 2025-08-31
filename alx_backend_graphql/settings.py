@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'graphene_django',
     'django_filters',
     'django_crontab',
+    'django_celery_beat',
     'crm'
 ]
 
@@ -135,3 +136,9 @@ CRONJOBS = [
     ('*/5 * * * *', 'crm.cron.log_crm_heartbeat'),
     ('0 */12 * * *', 'crm.cron.update_low_stock'),
 ]
+
+# Import CRM-specific settings
+try:
+    from crm.settings import *
+except ImportError:
+    pass
