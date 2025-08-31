@@ -16,13 +16,13 @@ class CustomerType(DjangoObjectType):
 class ProductType(DjangoObjectType):
     class Meta:
         model = Product
-        fields = ("id", "name", "price")
+        fields = ("id", "name", "price", "stock")
 
 
 class OrderType(DjangoObjectType):
     class Meta:
         model = Order
-        fields = ("id", "customer", "product", "quantity", "created_at")
+        fields = ("id", "customer", "products", "total_amount", "order_date")
 
 
 # ------------------------
@@ -55,13 +55,13 @@ class ProductForm(forms.ModelForm):
 class OrderForm(forms.ModelForm):
     class Meta:
         model = Order
-        fields = ["customer", "product", "quantity"]
+        fields = ["customer", "products", "total_amount"]
 
-    def clean_quantity(self):
-        qty = self.cleaned_data["quantity"]
-        if qty <= 0:
-            raise forms.ValidationError("Quantity must be greater than 0")
-        return qty
+    def clean_total_amount(self):
+        amount = self.cleaned_data["total_amount"]
+        if amount < 0:
+            raise forms.ValidationError("Total amount cannot be negative")
+        return amount
 
 
 # ------------------------
@@ -103,24 +103,81 @@ class CreateProduct(graphene.Mutation):
 class CreateOrder(graphene.Mutation):
     class Arguments:
         customer_id = graphene.ID(required=True)
-        product_id = graphene.ID(required=True)
-        quantity = graphene.Int(required=True)
+        product_ids = graphene.List(graphene.ID, required=True)
+        total_amount = graphene.Float()
 
     order = graphene.Field(OrderType)
     errors = graphene.List(graphene.String)
 
-    def mutate(self, info, customer_id, product_id, quantity):
-        form = OrderForm(
-            data={
+    def mutate(self, info, customer_id, product_ids, total_amount=None):
+        try:
+            customer = Customer.objects.get(id=customer_id)
+            products = Product.objects.filter(id__in=product_ids)
+            
+            if not products.exists():
+                return CreateOrder(order=None, errors=["No valid products found"])
+            
+            # Calculate total amount if not provided
+            if total_amount is None:
+                total_amount = sum(product.price for product in products)
+            
+            form_data = {
                 "customer": customer_id,
-                "product": product_id,
-                "quantity": quantity,
+                "total_amount": total_amount,
             }
-        )
-        if form.is_valid():
-            order = form.save()
-            return CreateOrder(order=order, errors=None)
-        return CreateOrder(order=None, errors=[str(e) for e in form.errors.values()])
+            
+            form = OrderForm(data=form_data)
+            if form.is_valid():
+                order = form.save()
+                order.products.set(products)
+                return CreateOrder(order=order, errors=None)
+            return CreateOrder(order=None, errors=[str(e) for e in form.errors.values()])
+        except Customer.DoesNotExist:
+            return CreateOrder(order=None, errors=["Customer not found"])
+        except Exception as e:
+            return CreateOrder(order=None, errors=[str(e)])
+
+
+class UpdateLowStockProducts(graphene.Mutation):
+    class Arguments:
+        pass
+
+    updated_products = graphene.List(ProductType)
+    success_message = graphene.String()
+    errors = graphene.List(graphene.String)
+
+    def mutate(self, info):
+        try:
+            # Query products with stock < 10
+            low_stock_products = Product.objects.filter(stock__lt=10)
+            
+            if not low_stock_products.exists():
+                return UpdateLowStockProducts(
+                    updated_products=[],
+                    success_message="No low-stock products found.",
+                    errors=None
+                )
+            
+            updated_products = []
+            for product in low_stock_products:
+                # Increment stock by 10 (simulating restocking)
+                product.stock += 10
+                product.save()
+                updated_products.append(product)
+            
+            success_message = f"Successfully updated {len(updated_products)} low-stock products."
+            
+            return UpdateLowStockProducts(
+                updated_products=updated_products,
+                success_message=success_message,
+                errors=None
+            )
+        except Exception as e:
+            return UpdateLowStockProducts(
+                updated_products=[],
+                success_message=None,
+                errors=[str(e)]
+            )
 
 
 # ------------------------
@@ -147,6 +204,7 @@ class Mutation(graphene.ObjectType):
     create_customer = CreateCustomer.Field()
     create_product = CreateProduct.Field()
     create_order = CreateOrder.Field()
+    update_low_stock_products = UpdateLowStockProducts.Field()
 
 
 schema = graphene.Schema(query=Query, mutation=Mutation)

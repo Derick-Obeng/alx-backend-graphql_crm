@@ -1,0 +1,5 @@
+django==5.2.4
+graphene-django
+django-filter
+django-crontab
+requests

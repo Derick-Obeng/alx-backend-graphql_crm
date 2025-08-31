@@ -40,6 +40,7 @@ INSTALLED_APPS = [
 
     'graphene_django',
     'django_filters',
+    'django_crontab',
     'crm'
 ]
 
@@ -130,3 +131,7 @@ GRAPHENE = {
         'SCHEMA': 'alx_backend_graphql_crm.schema.schema'
 
 }
+
+CRONJOBS = [
+    ('0 */12 * * *', 'crm.cron.update_low_stock'),
+]
